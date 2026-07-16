@@ -1317,10 +1317,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if review_language == "en":
             if self.profile.has_market_stats and self.profile.has_sector_rankings:
                 return """### 3. Fund Flows
-(Interpret what turnover, participation, and flow signals imply.)
+(Interpret what turnover, participation, and flow signals imply. Do not invent northbound flows, ETF flows, or net inflow figures that were not provided.)
 
 ### 4. Sector Highlights
-(Distinguish industry-sector moves from concept/theme moves, then analyze drivers and persistence.)
+(Distinguish industry-sector moves from concept/theme moves; judge persistence vs one-day spikes; note which themes look crowded.)
 
 ### 5. Outlook
 (Provide the near-term outlook based on price action and news.)
@@ -1329,17 +1329,17 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 (List the main risks to monitor.)
 
 ### 7. Strategy Plan
-(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, and end with "For reference only, not investment advice.")"""
+(Provide: stance offensive/balanced/defensive; position-size range; watch themes; avoid themes; one invalidation trigger; portfolio action limited to watch / size-control / wait-for-confirmation — no buy/sell calls. End with "For reference only, not investment advice.")"""
 
             section_number = 3
             sections: List[str] = []
             if self.profile.has_market_stats:
                 sections.append(f"""### {section_number}. Fund Flows
-(Interpret only the provided turnover, participation, breadth, and flow signals.)""")
+(Interpret only the provided turnover, participation, breadth, and flow signals. Do not invent unsupported northbound/ETF/net-inflow data.)""")
                 section_number += 1
             if self.profile.has_sector_rankings:
                 sections.append(f"""### {section_number}. Sector Highlights
-(Analyze only the provided industry-sector and concept/theme rankings.)""")
+(Analyze only the provided industry-sector and concept/theme rankings; judge persistence vs one-day spikes.)""")
                 section_number += 1
             sections.extend([
                 f"""### {section_number}. News Catalysts
@@ -1349,25 +1349,54 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 f"""### {section_number + 2}. Risk Alerts
 (List the main risks to monitor.)""",
                 f"""### {section_number + 3}. Strategy Plan
-(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, and end with "For reference only, not investment advice.")""",
+(Provide an offensive/balanced/defensive stance, a position-sizing guideline, one invalidation trigger, portfolio action limited to watch/size-control/wait — no buy/sell calls, and end with "For reference only, not investment advice.")""",
             ])
             return "\n\n".join(sections)
 
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
             return """### 三、板块主线
-（不要只复述涨幅榜。请区分行业板块与概念题材，判断是否形成主线、驱动逻辑是什么、持续性如何；说明哪些是一日游，哪些更有延续性。）
+（不要只复述“哪个板块涨了”。请基于已提供的行业板块与概念题材榜单判断：
+1）是否形成主线；
+2）是行业主线还是概念题材；
+3）是资金扩散还是单点抱团；
+4）是否可能一日游；
+5）哪些方向要避免追高。
+未提供的板块资金流、研报共识或目标价不要编造；这些能力后续可接入，当前仅作观察预留。）
 
 ### 四、市场资金雷达
-（用成交额、上涨/下跌家数、涨停/跌停结构判断市场风险偏好：进攻、均衡还是防守；并说明资金更偏向哪些方向，例如高切低、抱团龙头、题材扩散或防御回流。）
+（仅用已提供的成交额、上涨/下跌家数、涨停/跌停结构判断：
+1）市场风险偏好：进攻 / 均衡 / 防守；
+2）成交额是否支持行情延续；
+3）涨停/跌停结构是否健康；
+4）上涨/下跌家数是否说明赚钱效应扩散。
+严禁编造北向资金、ETF 资金、主力净流入等未提供数据。）
 
 ### 五、机会雷达
-（基于板块主线、资金温度和消息催化，给出 3-5 个值得观察的行业/主题方向。每个方向说明：1）为什么值得观察；2）需要继续验证什么；3）是否容易追高；4）是否和我的持仓相关。若上下文未提供持仓信息，则写“持仓关联：暂无持仓上下文”。）
+（基于板块主线、资金温度和消息催化，给出 3-5 个值得观察的行业/主题方向。这是候选观察池，只谈观察方向，不构成荐股或买入建议。每个方向必须严格按以下格式输出：
+
+#### 方向一：行业/主题名称
+- 关注理由：
+- 持续性判断：连续走强 / 刚启动 / 一日游风险 / 转弱观察
+- 需要验证：
+- 追高风险：高 / 中 / 低
+- 和我的持仓关系：
+- 可观察个股：只列观察，不给买入建议
+
+若上下文没有持仓数据，每个方向统一写：
+- 和我的持仓关系：暂无持仓上下文，仅作为市场方向观察。
+后续若接入板块资金流、研报与目标价，可在“需要验证”中补充对应证据；当前没有则明确写“暂无该类数据”。）
 
 ### 六、消息催化
 （结合近三日新闻，提炼真正影响明日交易的催化或扰动；区分已定价信息与仍可能发酵的事件。）
 
 ### 七、明日交易计划
-（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件。）
+（请固定按下列字段输出，不要改标题：
+- 明日策略：进攻 / 均衡 / 防守
+- 仓位建议区间：
+- 重点观察方向：
+- 回避方向：
+- 触发失效条件：
+- 对持仓的动作建议：只写观察 / 控制仓位 / 等待确认，不直接喊买卖）
 
 ### 八、风险提示
 （列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）"""
@@ -1384,23 +1413,34 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if self.profile.has_sector_rankings:
             add_section(
                 "板块主线",
-                "（不要只复述涨幅榜。仅基于已提供的行业板块与概念题材榜单，判断是否形成主线、持续性如何，不扩展未提供的数据）",
+                "（不要只复述涨幅榜。仅基于已提供榜单判断：是否形成主线、行业还是概念、资金扩散还是单点抱团、是否可能一日游、哪些方向避免追高；不编造未提供的板块资金流/研报/目标价）",
             )
         if self.profile.has_market_stats:
             add_section(
                 "市场资金雷达",
-                "（仅解读已提供的成交额、上涨/下跌家数、涨停/跌停结构，判断进攻/均衡/防守偏好及资金偏向，不编造未提供的数据）",
+                "（仅解读已提供的成交额、上涨/下跌家数、涨停/跌停结构：风险偏好进攻/均衡/防守、成交额是否支持延续、涨跌停是否健康、赚钱效应是否扩散；严禁编造北向/ETF/主力净流入等未提供数据）",
             )
         if self.profile.has_sector_rankings or self.profile.has_market_stats:
             add_section(
                 "机会雷达",
-                "（基于已提供的板块/资金线索，给出 3-5 个值得观察的行业/主题方向；每个方向说明：为什么值得观察、需要继续验证什么、是否容易追高、是否和我的持仓相关；无持仓上下文时写“持仓关联：暂无持仓上下文”）",
+                (
+                    "（给出 3-5 个候选观察方向，只谈观察不荐股。每个方向固定输出："
+                    "#### 方向N：名称；关注理由；持续性判断（连续走强/刚启动/一日游风险/转弱观察）；"
+                    "需要验证；追高风险（高/中/低）；和我的持仓关系；可观察个股（只列观察）。"
+                    "无持仓时写：和我的持仓关系：暂无持仓上下文，仅作为市场方向观察。）"
+                ),
             )
         add_section(
             "消息催化",
             "（结合近三日新闻和指数表现，提炼真正影响明日交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
         )
-        add_section("明日交易计划", "（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）")
+        add_section(
+            "明日交易计划",
+            (
+                "（固定字段：明日策略（进攻/均衡/防守）；仓位建议区间；重点观察方向；回避方向；"
+                "触发失效条件；对持仓的动作建议（只写观察/控制仓位/等待确认，不直接喊买卖））"
+            ),
+        )
         add_section("风险提示", "（列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）")
         return "\n\n".join(sections)
 
@@ -1755,6 +1795,7 @@ Market conditions can change quickly. The data above is for reference only and d
             f"""
 ### 三、板块主线
 {sector_block or "- 暂无板块涨跌榜数据。"}
+- 判断要点：是否形成主线、行业还是概念、资金扩散还是单点抱团、是否可能一日游、哪些方向避免追高。
 """
             if self.profile.has_sector_rankings
             else ""
@@ -1762,7 +1803,11 @@ Market conditions can change quickly. The data above is for reference only and d
         funds_section = (
             """
 ### 四、市场资金雷达
-- 结合成交额、上涨/下跌家数和涨停/跌停结构看，当前更适合等待确认，避免仅凭单一热点追高。
+- 市场风险偏好：均衡
+- 成交额是否支持行情延续：待确认
+- 涨停/跌停结构是否健康：待确认
+- 上涨/下跌家数是否说明赚钱效应扩散：待确认
+- 未提供北向资金、ETF 资金、主力净流入等数据，不做编造。
 """
             if self.profile.has_market_stats
             else ""
@@ -1770,8 +1815,14 @@ Market conditions can change quickly. The data above is for reference only and d
         opportunity_section = (
             """
 ### 五、机会雷达
-- 暂无足够确认时，优先观察主线是否延续、成交额是否配合，以及是否存在明显追高风险。
-- 持仓关联：暂无持仓上下文。
+
+#### 方向一：待主线确认
+- 关注理由：暂无足够确认时，优先观察主线是否延续、成交额是否配合。
+- 持续性判断：转弱观察
+- 需要验证：板块持续性、成交额配合；暂无板块资金流/研报/目标价数据。
+- 追高风险：高
+- 和我的持仓关系：暂无持仓上下文，仅作为市场方向观察。
+- 可观察个股：只列观察，不给买入建议
 """
             if self.profile.has_sector_rankings or self.profile.has_market_stats
             else ""
@@ -1781,9 +1832,12 @@ Market conditions can change quickly. The data above is for reference only and d
             risk_heading = "### 八、风险提示"
             plan_section = """
 ### 七、明日交易计划
-- 结论：均衡观望；仓位建议保持中性，等待主线与资金方向相互确认。
-- 关注方向：已形成持续性的行业/主题；回避一日游热点和拥挤追高。
-- 触发失效条件：成交额显著萎缩或涨停结构快速恶化。
+- 明日策略：均衡
+- 仓位建议区间：中性，等待主线与资金方向相互确认
+- 重点观察方向：已形成持续性的行业/主题
+- 回避方向：一日游热点和拥挤追高
+- 触发失效条件：成交额显著萎缩或涨停结构快速恶化
+- 对持仓的动作建议：观察 / 控制仓位 / 等待确认（不直接喊买卖）
 """
         else:
             # Keep legacy numbering for markets without breadth/sector tables
