@@ -1312,12 +1312,76 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         label = str(scores["temperature_label"])
         return score, label
 
-    def _build_output_template_sections(self, review_language: str) -> str:
+    def _get_configured_watchlist_codes(self) -> List[str]:
+        """Return configured STOCK_LIST codes without inventing holdings."""
+        raw_codes = getattr(self.config, "stock_list", None) or []
+        codes: List[str] = []
+        for item in raw_codes:
+            code = str(item or "").strip()
+            if code and code not in codes:
+                codes.append(code)
+        return codes
+
+    def _resolve_watchlist_label(self, stock_code: str) -> str:
+        """Prefer code+name when a lightweight name lookup succeeds."""
+        code = str(stock_code or "").strip()
+        if not code:
+            return ""
+        name = None
+        try:
+            name = self.data_manager.get_stock_name(code, allow_realtime=False)
+        except Exception as exc:
+            logger.debug("watchlist name lookup failed for %s: %s", code, exc)
+        name = str(name or "").strip()
+        if name and name != code and not name.startswith("股票"):
+            return f"{code} {name}"
+        return code
+
+    def _build_watchlist_context_block(self, review_language: str) -> str:
+        """Build the portfolio/watchlist context block for the review prompt."""
+        codes = self._get_configured_watchlist_codes()
+        if review_language == "en":
+            if not codes:
+                return (
+                    "## My Watchlist / Holdings Context\n"
+                    "- No STOCK_LIST configured. Do not invent holdings.\n"
+                    "- For portfolio linkage fields, write: no clear linkage."
+                )
+            lines = "\n".join(f"- {self._resolve_watchlist_label(code)}" for code in codes)
+            return (
+                "## My Watchlist / Holdings Context\n"
+                "Use only the symbols below. Do not invent holdings outside this list. "
+                "Relate opportunity themes to these symbols when relevant; otherwise write "
+                "\"no clear linkage\". Observation only — no buy/sell calls.\n"
+                f"{lines}"
+            )
+
+        if not codes:
+            return (
+                "## 我的持仓/关注股\n"
+                "- 当前未配置 STOCK_LIST，不要编造持仓。\n"
+                "- 机会雷达中持仓关联请写：暂无持仓上下文，仅作为市场方向观察。"
+            )
+        lines = "\n".join(f"- {self._resolve_watchlist_label(code)}" for code in codes)
+        return (
+            "## 我的持仓/关注股\n"
+            "以下来自配置 STOCK_LIST，只能使用列表内标的做关联，禁止编造列表外持仓。"
+            "必须把机会方向与下列标的做关联；若无明显相关性，写“持仓关联：暂无明显关联”。"
+            "可观察个股只列观察，不给买卖建议。\n"
+            f"{lines}"
+        )
+
+    def _build_output_template_sections(
+        self,
+        review_language: str,
+        *,
+        has_watchlist: bool = False,
+    ) -> str:
         """Build LLM output sections according to market data capabilities."""
         if review_language == "en":
             if self.profile.has_market_stats and self.profile.has_sector_rankings:
                 return """### 3. Fund Flows
-(Interpret what turnover, participation, and flow signals imply. Do not invent northbound flows, ETF flows, or net inflow figures that were not provided.)
+(Interpret what turnover, participation, and flow signals imply. Do not invent northbound flows, ETF flows, or net inflow figures that were not provided. If yesterday's turnover was not provided, do not claim turnover expanded/shrunk vs yesterday.)
 
 ### 4. Sector Highlights
 (Distinguish industry-sector moves from concept/theme moves; judge persistence vs one-day spikes; note which themes look crowded.)
@@ -1335,7 +1399,7 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             sections: List[str] = []
             if self.profile.has_market_stats:
                 sections.append(f"""### {section_number}. Fund Flows
-(Interpret only the provided turnover, participation, breadth, and flow signals. Do not invent unsupported northbound/ETF/net-inflow data.)""")
+(Interpret only the provided turnover, participation, breadth, and flow signals. Do not invent unsupported northbound/ETF/net-inflow data. If yesterday's turnover was not provided, do not claim turnover expanded/shrunk vs yesterday.)""")
                 section_number += 1
             if self.profile.has_sector_rankings:
                 sections.append(f"""### {section_number}. Sector Highlights
@@ -1353,17 +1417,26 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             ])
             return "\n\n".join(sections)
 
+        watchlist_rule = (
+            "必须把每个机会方向与【我的持仓/关注股】做关联，并输出字段“持仓关联：”和“可观察个股：”。"
+            "可观察个股只能选自提供的持仓/关注股或主线相关观察标的，只列观察、不给买卖建议。"
+            "若无明显相关性，写：持仓关联：暂无明显关联。"
+            if has_watchlist
+            else "当前未提供持仓/关注股时，每个方向必须写：持仓关联：暂无持仓上下文，仅作为市场方向观察。"
+        )
+
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
-            return """【强制结构】必须严格使用以下标题，不得省略，不得改名。字段名也不得改写。
+            return f"""【强制结构】必须严格使用以下标题，不得省略，不得改名。字段名也不得改写。
 
 ### 三、板块主线
 （不要只复述“哪个板块涨了”。必须判断：是否形成主线；行业主线还是概念题材；资金扩散还是单点抱团；是否可能一日游；哪些方向要避免追高。未提供的板块资金流/研报/目标价不要编造。）
 
 ### 四、市场资金雷达
-（仅用已提供的成交额、上涨/下跌家数、涨停/跌停结构判断风险偏好：进攻/均衡/防守；成交额是否支持延续；涨跌停是否健康；赚钱效应是否扩散。严禁编造北向资金、ETF 资金、主力净流入等未提供数据。）
+（仅用已提供的成交额、上涨/下跌家数、涨停/跌停结构判断风险偏好：进攻/均衡/防守；成交额是否支持延续；涨跌停是否健康；赚钱效应是否扩散。严禁编造北向资金、ETF 资金、主力净流入等未提供数据。如果未提供昨日成交额，禁止写“较昨日放大/萎缩”。）
 
 ### 五、机会雷达
-（给出 3-5 个候选观察方向，只谈观察，不构成荐股。每个方向必须严格按以下格式，标题与字段名不得改写：
+（给出 3-5 个候选观察方向，只谈观察，不构成荐股。{watchlist_rule}
+每个方向必须严格按以下格式，标题与字段名不得改写：
 
 #### 方向一：行业/主题名称
 - 关注理由：
@@ -1373,8 +1446,6 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 - 持仓关联：
 - 可观察个股：只列观察，不给买入建议
 
-若上下文没有持仓数据，每个方向必须写：
-- 持仓关联：暂无持仓上下文，仅作为市场方向观察。
 后续若接入板块资金流、研报与目标价，可在“需要验证”中补充；当前没有则写“暂无该类数据”。）
 
 ### 六、消息催化
@@ -1409,16 +1480,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if self.profile.has_market_stats:
             add_section(
                 "市场资金雷达",
-                "（标题固定，不得改名。仅解读已提供成交额、涨跌家数、涨跌停：进攻/均衡/防守、成交额是否支持延续、结构是否健康、赚钱效应是否扩散；严禁编造北向/ETF/主力净流入）",
+                "（标题固定，不得改名。仅解读已提供成交额、涨跌家数、涨跌停：进攻/均衡/防守、成交额是否支持延续、结构是否健康、赚钱效应是否扩散；严禁编造北向/ETF/主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”）",
             )
         if self.profile.has_sector_rankings or self.profile.has_market_stats:
             add_section(
                 "机会雷达",
                 (
                     "（标题固定，不得改名。给出 3-5 个候选观察方向，只谈观察不荐股。"
-                    "每个方向必须使用字段：关注理由；板块持续性判断（连续走强/刚启动/一日游风险/转弱观察）；"
-                    "需要验证；追高风险（高/中/低）；持仓关联；可观察个股（只列观察）。"
-                    "无持仓时必须写：持仓关联：暂无持仓上下文，仅作为市场方向观察。）"
+                    f"{watchlist_rule}"
+                    "每个方向必须使用字段：关注理由；板块持续性判断；需要验证；追高风险；持仓关联；可观察个股。）"
                 ),
             )
         add_section(
@@ -1535,8 +1605,9 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             news_placeholder = news_text if news_text else "No relevant news"
             data_boundary_requirement = (
                 "- Respect Data Limits: do not invent or over-interpret unsupported breadth, fund-flow, turnover, participation, or sector-ranking data.\n"
+                "- If yesterday's turnover was not provided, do not claim turnover expanded/shrunk vs yesterday.\n"
                 if data_limits_block
-                else ""
+                else "- If yesterday's turnover was not provided, do not claim turnover expanded/shrunk vs yesterday.\n"
             )
             market_summary_hint = (
                 "2-3 sentences summarizing overall market tone, index moves, and liquidity."
@@ -1548,8 +1619,9 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
             news_placeholder = news_text if news_text else "暂无相关新闻"
             data_boundary_requirement = (
                 "- 严格遵守数据边界：未提供涨跌家数、资金流、成交额汇总或板块榜时，不要编造或过度解读。\n"
+                "- 未提供昨日成交额时，禁止写“较昨日放大/萎缩”。\n"
                 if data_limits_block
-                else ""
+                else "- 未提供昨日成交额时，禁止写“较昨日放大/萎缩”。\n"
             )
             market_summary_hint = (
                 "2-3句话概括指数、涨跌家数、成交额和情绪温度，明确“强势/偏暖/震荡/偏弱”判断"
@@ -1557,7 +1629,13 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
                 else "2-3句话概括指数表现、新闻线索和整体风险状态，不要补写未提供的市场宽度或资金流数据"
             )
 
-        output_template_sections = self._build_output_template_sections(review_language)
+        watchlist_codes = self._get_configured_watchlist_codes()
+        has_watchlist = bool(watchlist_codes)
+        watchlist_block = self._build_watchlist_context_block(review_language)
+        output_template_sections = self._build_output_template_sections(
+            review_language,
+            has_watchlist=has_watchlist,
+        )
         zh_market_scope_name = self._get_market_scope_name("zh")
         zh_report_title = f"{overview.date} 大盘复盘"
         if self.region in ("jp", "kr"):
@@ -1596,6 +1674,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 
 {data_limits_block}
 
+{watchlist_block}
+
 ## Market News
 {news_placeholder}
 
@@ -1631,6 +1711,10 @@ Output the report content directly, no extra commentary.
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
 - 必须严格使用以下标题，不得省略，不得改名
+- 必须把机会方向与【我的持仓/关注股】做关联；每个方向必须输出“持仓关联：”和“可观察个股：”
+- 若持仓已提供但无明显相关性，写：持仓关联：暂无明显关联；未提供持仓时写：持仓关联：暂无持仓上下文，仅作为市场方向观察
+- 不要编造不在 STOCK_LIST 中的持仓，不要直接给买卖建议
+- 未提供昨日成交额时，禁止写“较昨日放大/萎缩”
 - {workflow_hint}
 - 不要重复列出已由系统注入的表格数据；正文负责解释表格背后的含义
 {data_boundary_requirement}
@@ -1650,6 +1734,8 @@ Output the report content directly, no extra commentary.
 {sector_block}
 
 {data_limits_block}
+
+{watchlist_block}
 
 ## 市场新闻
 {news_placeholder}
@@ -1799,7 +1885,7 @@ Market conditions can change quickly. The data above is for reference only and d
             """
 ### 四、市场资金雷达
 - 市场风险偏好：均衡
-- 成交额是否支持行情延续：待确认
+- 成交额是否支持行情延续：待确认（未提供昨日成交额，不做较昨日放大/萎缩判断）
 - 涨停/跌停结构是否健康：待确认
 - 上涨/下跌家数是否说明赚钱效应扩散：待确认
 - 未提供北向资金、ETF 资金、主力净流入等数据，不做编造。
@@ -1807,8 +1893,18 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_market_stats
             else ""
         )
+        watchlist_codes = self._get_configured_watchlist_codes()
+        if watchlist_codes:
+            watchlist_labels = "、".join(
+                self._resolve_watchlist_label(code) for code in watchlist_codes[:12]
+            )
+            portfolio_link = f"与关注股有关则点名；否则写暂无明显关联。关注股：{watchlist_labels}"
+            observe_stocks = "只列观察，优先来自 STOCK_LIST；不给买入建议"
+        else:
+            portfolio_link = "暂无持仓上下文，仅作为市场方向观察。"
+            observe_stocks = "只列观察，不给买入建议"
         opportunity_section = (
-            """
+            f"""
 ### 五、机会雷达
 
 #### 方向一：待主线确认
@@ -1816,8 +1912,8 @@ Market conditions can change quickly. The data above is for reference only and d
 - 板块持续性判断：转弱观察
 - 需要验证：板块持续性、成交额配合；暂无板块资金流/研报/目标价数据。
 - 追高风险：高
-- 持仓关联：暂无持仓上下文，仅作为市场方向观察。
-- 可观察个股：只列观察，不给买入建议
+- 持仓关联：{portfolio_link}
+- 可观察个股：{observe_stocks}
 """
             if self.profile.has_sector_rankings or self.profile.has_market_stats
             else ""
