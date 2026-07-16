@@ -48,7 +48,7 @@ _CHINESE_SECTION_PATTERNS = {
     "market_summary": r"###\s*一、(?:盘面总览|市场总结)",
     "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数)",
     "sector_highlights": r"###\s*三、(?:板块主线|热点解读|板块表现)",
-    "funds_sentiment": r"###\s*四、(?:市场资金雷达|资金与情绪|资金动向)",
+    "funds_sentiment": r"###\s*四、(?:市场资金雷达(?:\s*V2)?|资金与情绪|资金动向)",
     "news_catalysts": r"###\s*(?:五|六)、(?:消息催化|后市展望)",
 }
 
@@ -1371,6 +1371,131 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             f"{lines}"
         )
 
+    def _build_market_radar_v2_block(self, overview: MarketOverview) -> str:
+        """Derive a Market Radar V2 summary from existing MarketOverview fields only."""
+        if not (self.profile.has_market_stats or self.profile.has_sector_rankings):
+            return ""
+
+        review_language = self._get_review_language()
+        traded = max(0, int(overview.up_count) + int(overview.down_count) + int(overview.flat_count))
+        up_ratio = (overview.up_count / traded) if traded else 0.0
+        down_ratio = (overview.down_count / traded) if traded else 0.0
+        limit_gap = int(overview.limit_up_count) - int(overview.limit_down_count)
+
+        indices = [idx for idx in (overview.indices or []) if idx is not None]
+        avg_change = (
+            sum(float(getattr(idx, "change_pct", 0.0) or 0.0) for idx in indices) / len(indices)
+            if indices
+            else 0.0
+        )
+        strongest = max(indices, key=lambda idx: float(getattr(idx, "change_pct", 0.0) or 0.0)) if indices else None
+        weakest = min(indices, key=lambda idx: float(getattr(idx, "change_pct", 0.0) or 0.0)) if indices else None
+
+        def _rank_names(rows: List[Dict], limit: int = 3) -> str:
+            names = []
+            for row in (rows or [])[:limit]:
+                name = str((row or {}).get("name") or "").strip()
+                if not name:
+                    continue
+                change = (row or {}).get("change_pct")
+                try:
+                    names.append(f"{name}({float(change):+.2f}%)")
+                except (TypeError, ValueError):
+                    names.append(name)
+            return "、".join(names) if names else "暂无"
+
+        top_sector_pcts = []
+        for row in (overview.top_sectors or [])[:5]:
+            try:
+                top_sector_pcts.append(float((row or {}).get("change_pct") or 0.0))
+            except (TypeError, ValueError):
+                continue
+        top_concept_pcts = []
+        for row in (overview.top_concepts or [])[:5]:
+            try:
+                top_concept_pcts.append(float((row or {}).get("change_pct") or 0.0))
+            except (TypeError, ValueError):
+                continue
+
+        index_weak_stock_strong = bool(
+            self.profile.has_market_stats
+            and avg_change < 0
+            and overview.up_count > overview.down_count
+            and up_ratio >= 0.55
+        )
+        weight_drag = bool(
+            strongest is not None
+            and weakest is not None
+            and float(getattr(strongest, "change_pct", 0.0) or 0.0)
+            - float(getattr(weakest, "change_pct", 0.0) or 0.0)
+            >= 0.8
+            and float(getattr(weakest, "change_pct", 0.0) or 0.0) < 0
+        )
+        theme_active = bool(
+            top_concept_pcts and max(top_concept_pcts) >= 2.0
+        ) or bool(top_sector_pcts and max(top_sector_pcts) >= 2.0)
+        if len(top_sector_pcts) >= 2 and top_sector_pcts[0] - top_sector_pcts[1] >= 1.2:
+            leadership_style = "主线集中"
+        elif len(top_sector_pcts) >= 3 and (top_sector_pcts[0] - top_sector_pcts[2]) < 1.0:
+            leadership_style = "快速轮动"
+        elif top_sector_pcts:
+            leadership_style = "局部轮动"
+        else:
+            leadership_style = "暂无法判断"
+
+        watchlist_codes = self._get_configured_watchlist_codes()
+        if watchlist_codes:
+            watchlist_tip = (
+                "已配置 STOCK_LIST，机会雷达必须做持仓关联；无明确相关性写“暂无明显关联”。"
+            )
+        else:
+            watchlist_tip = "未配置 STOCK_LIST，持仓关联写“暂无持仓上下文，仅作为市场方向观察”。"
+
+        if review_language == "en":
+            strongest_text = (
+                f"{strongest.name} ({strongest.change_pct:+.2f}%)" if strongest else "N/A"
+            )
+            weakest_text = (
+                f"{weakest.name} ({weakest.change_pct:+.2f}%)" if weakest else "N/A"
+            )
+            return f"""## Market Radar V2 (derived from provided data only)
+- Advancers/Decliners ratio: {up_ratio:.1%} / {down_ratio:.1%} (up {overview.up_count} / down {overview.down_count} / flat {overview.flat_count})
+- Limit-up minus limit-down: {limit_gap:+d} (up {overview.limit_up_count} / down {overview.limit_down_count})
+- Aggregate turnover: {overview.total_amount:.0f} ({self._get_turnover_unit_label()})
+- Average major-index change: {avg_change:+.2f}%
+- Strongest index: {strongest_text}
+- Weakest index: {weakest_text}
+- Industry leaders / laggards: {self._format_ranking_summary(overview.top_sectors) or "N/A"} / {self._format_ranking_summary(overview.bottom_sectors) or "N/A"}
+- Concept leaders / laggards: {self._format_ranking_summary(overview.top_concepts) or "N/A"} / {self._format_ranking_summary(overview.bottom_concepts) or "N/A"}
+- Weak index but strong stocks: {"yes" if index_weak_stock_strong else "no"}
+- Large-cap drag signal: {"yes" if weight_drag else "no"}
+- Theme activity: {"active" if theme_active else "muted"}
+- Leadership style: {"concentrated" if leadership_style == "主线集中" else "fast rotation" if leadership_style == "快速轮动" else "mixed/unclear"}
+- Watchlist linkage tip: {"STOCK_LIST present; relate themes to holdings" if watchlist_codes else "No STOCK_LIST; do not invent holdings"}
+- Do not invent northbound/ETF/net-inflow or yesterday-comparison claims without provided data."""
+
+        strongest_text = (
+            f"{strongest.name}({strongest.change_pct:+.2f}%)" if strongest else "暂无"
+        )
+        weakest_text = (
+            f"{weakest.name}({weakest.change_pct:+.2f}%)" if weakest else "暂无"
+        )
+        return f"""## 市场资金与板块机会雷达 V2（仅基于已提供数据整理，未新增抓取）
+- 上涨/下跌家数比例：上涨 {up_ratio:.1%} / 下跌 {down_ratio:.1%}（上涨 {overview.up_count} / 下跌 {overview.down_count} / 平盘 {overview.flat_count}）
+- 涨停/跌停差：{limit_gap:+d}（涨停 {overview.limit_up_count} / 跌停 {overview.limit_down_count}）
+- 两市成交额：{overview.total_amount:.0f} 亿元
+- 主要指数平均涨跌幅：{avg_change:+.2f}%
+- 最强指数：{strongest_text}
+- 最弱指数：{weakest_text}
+- 行业领涨/领跌：{_rank_names(overview.top_sectors)} / {_rank_names(overview.bottom_sectors)}
+- 概念领涨/领跌：{_rank_names(overview.top_concepts)} / {_rank_names(overview.bottom_concepts)}
+- 是否“指数弱但个股强”：{"是" if index_weak_stock_strong else "否"}
+- 是否“权重拖累”：{"是" if weight_drag else "否"}
+- 是否“题材活跃”：{"是" if theme_active else "否"}
+- 主线形态：{leadership_style}（主线集中 / 快速轮动 / 局部轮动）
+- 与 STOCK_LIST 关联提示：{watchlist_tip}
+- 约束：严禁编造北向资金、ETF 资金、主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”。"""
+
     def _build_output_template_sections(
         self,
         review_language: str,
@@ -1431,8 +1556,15 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 ### 三、板块主线
 （不要只复述“哪个板块涨了”。必须判断：是否形成主线；行业主线还是概念题材；资金扩散还是单点抱团；是否可能一日游；哪些方向要避免追高。未提供的板块资金流/研报/目标价不要编造。）
 
-### 四、市场资金雷达
-（仅用已提供的成交额、上涨/下跌家数、涨停/跌停结构判断风险偏好：进攻/均衡/防守；成交额是否支持延续；涨跌停是否健康；赚钱效应是否扩散。严禁编造北向资金、ETF 资金、主力净流入等未提供数据。如果未提供昨日成交额，禁止写“较昨日放大/萎缩”。）
+### 四、市场资金雷达 V2
+（必须基于上方“市场资金与板块机会雷达 V2”数据块解读，严禁编造北向资金、ETF 资金、主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”。
+必须严格按下列字段输出，字段名不得改写：
+- 风险偏好：进攻 / 均衡 / 防守
+- 赚钱效应：扩散 / 分化 / 收缩
+- 资金结构：指数弱个股强 / 权重拖累 / 题材活跃 / 均衡
+- 主线强度：主线集中 / 快速轮动 / 局部轮动
+- 追高风险：高 / 中 / 低
+- 明日确认信号：）
 
 ### 五、机会雷达
 （给出 3-5 个候选观察方向，只谈观察，不构成荐股。{watchlist_rule}
@@ -1441,12 +1573,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 #### 方向一：行业/主题名称
 - 关注理由：
 - 板块持续性判断：连续走强 / 刚启动 / 一日游风险 / 转弱观察
-- 需要验证：
+- 资金/情绪验证：
 - 追高风险：高 / 中 / 低
 - 持仓关联：
 - 可观察个股：只列观察，不给买入建议
+- 失效条件：
 
-后续若接入板块资金流、研报与目标价，可在“需要验证”中补充；当前没有则写“暂无该类数据”。）
+后续若接入板块资金流、研报与目标价，可在“资金/情绪验证”中补充；当前没有则写“暂无该类数据”。）
 
 ### 六、消息催化
 （结合近三日新闻，提炼真正影响明日交易的催化或扰动；区分已定价信息与仍可能发酵的事件。）
@@ -1475,12 +1608,16 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if self.profile.has_sector_rankings:
             add_section(
                 "板块主线",
-                "（标题固定为“三、板块主线”，不得改名。不要只复述涨幅榜；判断主线/行业或概念/扩散或抱团/一日游风险/避免追高；不编造未提供的板块资金流/研报/目标价）",
+                "（标题固定，不得改名。不要只复述涨幅榜；判断主线/行业或概念/扩散或抱团/一日游风险/避免追高；不编造未提供的板块资金流/研报/目标价）",
             )
         if self.profile.has_market_stats:
             add_section(
-                "市场资金雷达",
-                "（标题固定，不得改名。仅解读已提供成交额、涨跌家数、涨跌停：进攻/均衡/防守、成交额是否支持延续、结构是否健康、赚钱效应是否扩散；严禁编造北向/ETF/主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”）",
+                "市场资金雷达 V2",
+                (
+                    "（标题固定为“市场资金雷达 V2”，不得改名。必须输出字段："
+                    "风险偏好；赚钱效应；资金结构；主线强度；追高风险；明日确认信号。"
+                    "严禁编造北向/ETF/主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”）"
+                ),
             )
         if self.profile.has_sector_rankings or self.profile.has_market_stats:
             add_section(
@@ -1488,7 +1625,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 (
                     "（标题固定，不得改名。给出 3-5 个候选观察方向，只谈观察不荐股。"
                     f"{watchlist_rule}"
-                    "每个方向必须使用字段：关注理由；板块持续性判断；需要验证；追高风险；持仓关联；可观察个股。）"
+                    "每个方向必须使用字段：关注理由；板块持续性判断；资金/情绪验证；"
+                    "追高风险；持仓关联；可观察个股；失效条件。）"
                 ),
             )
         add_section(
@@ -1632,6 +1770,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         watchlist_codes = self._get_configured_watchlist_codes()
         has_watchlist = bool(watchlist_codes)
         watchlist_block = self._build_watchlist_context_block(review_language)
+        radar_v2_block = self._build_market_radar_v2_block(overview)
         output_template_sections = self._build_output_template_sections(
             review_language,
             has_watchlist=has_watchlist,
@@ -1641,7 +1780,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         if self.region in ("jp", "kr"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
-            "报告要像交易员盘后工作台：先给结论，再按数据表、板块主线、市场资金雷达、机会雷达、催化和计划展开"
+            "报告要像交易员盘后工作台：先给结论，再按数据表、板块主线、市场资金雷达 V2、机会雷达、催化和计划展开"
             if self.profile.has_market_stats or self.profile.has_sector_rankings
             else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
         )
@@ -1671,6 +1810,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 {stats_block}
 
 {sector_block}
+
+{radar_v2_block}
 
 {data_limits_block}
 
@@ -1711,7 +1852,8 @@ Output the report content directly, no extra commentary.
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
 - 必须严格使用以下标题，不得省略，不得改名
-- 必须把机会方向与【我的持仓/关注股】做关联；每个方向必须输出“持仓关联：”和“可观察个股：”
+- 必须把机会方向与【我的持仓/关注股】做关联；每个方向必须输出“持仓关联：”“可观察个股：”“资金/情绪验证：”“失效条件：”
+- “### 四、市场资金雷达 V2”必须输出：风险偏好、赚钱效应、资金结构、主线强度、追高风险、明日确认信号
 - 若持仓已提供但无明显相关性，写：持仓关联：暂无明显关联；未提供持仓时写：持仓关联：暂无持仓上下文，仅作为市场方向观察
 - 不要编造不在 STOCK_LIST 中的持仓，不要直接给买卖建议
 - 未提供昨日成交额时，禁止写“较昨日放大/萎缩”
@@ -1732,6 +1874,8 @@ Output the report content directly, no extra commentary.
 {stats_block}
 
 {sector_block}
+
+{radar_v2_block}
 
 {data_limits_block}
 
@@ -1883,12 +2027,13 @@ Market conditions can change quickly. The data above is for reference only and d
         )
         funds_section = (
             """
-### 四、市场资金雷达
-- 市场风险偏好：均衡
-- 成交额是否支持行情延续：待确认（未提供昨日成交额，不做较昨日放大/萎缩判断）
-- 涨停/跌停结构是否健康：待确认
-- 上涨/下跌家数是否说明赚钱效应扩散：待确认
-- 未提供北向资金、ETF 资金、主力净流入等数据，不做编造。
+### 四、市场资金雷达 V2
+- 风险偏好：均衡
+- 赚钱效应：分化
+- 资金结构：均衡
+- 主线强度：局部轮动
+- 追高风险：中
+- 明日确认信号：等待成交额与涨停结构相互确认；未提供昨日成交额，不做较昨日放大/萎缩判断
 """
             if self.profile.has_market_stats
             else ""
@@ -1910,10 +2055,11 @@ Market conditions can change quickly. The data above is for reference only and d
 #### 方向一：待主线确认
 - 关注理由：暂无足够确认时，优先观察主线是否延续、成交额是否配合。
 - 板块持续性判断：转弱观察
-- 需要验证：板块持续性、成交额配合；暂无板块资金流/研报/目标价数据。
+- 资金/情绪验证：待确认；暂无板块资金流/研报/目标价数据。
 - 追高风险：高
 - 持仓关联：{portfolio_link}
 - 可观察个股：{observe_stocks}
+- 失效条件：成交额显著萎缩或涨停结构快速恶化
 """
             if self.profile.has_sector_rankings or self.profile.has_market_stats
             else ""
