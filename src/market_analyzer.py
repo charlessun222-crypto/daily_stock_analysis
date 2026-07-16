@@ -48,7 +48,7 @@ _CHINESE_SECTION_PATTERNS = {
     "market_summary": r"###\s*一、(?:盘面总览|市场总结)",
     "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数)",
     "sector_highlights": r"###\s*三、(?:板块主线|热点解读|板块表现)",
-    "funds_sentiment": r"###\s*四、(?:市场资金雷达(?:\s*V2)?|资金与情绪|资金动向)",
+    "funds_sentiment": r"###\s*四、(?:市场资金雷达(?:\s*V[23])?|资金与情绪|资金动向)",
     "news_catalysts": r"###\s*(?:五|六)、(?:消息催化|后市展望)",
 }
 
@@ -103,6 +103,9 @@ class MarketOverview:
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
     top_concepts: List[Dict] = field(default_factory=list)    # 涨幅前5概念
     bottom_concepts: List[Dict] = field(default_factory=list) # 跌幅前5概念
+    # V3: 板块资金流 / 自选股所属板块（fail-open，可为空）
+    sector_fund_flows: Dict[str, Any] = field(default_factory=dict)
+    watchlist_board_map: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -442,6 +445,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         if self.profile.has_sector_rankings:
             self._get_sector_rankings(overview)
             self._get_concept_rankings(overview)
+
+        # 3b. V3 增强：板块资金流 + 自选股所属板块（fail-open）
+        self._get_sector_fund_flows(overview)
+        self._get_watchlist_board_map(overview)
         
         # 4. 获取北向资金（可选）
         # self._get_north_flow(overview)
@@ -568,6 +575,145 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         except Exception as e:
             logger.warning("[大盘] %s action=get_concept_rankings status=failed error=%s", self._log_context(), e)
+
+    def _pick_first_cn_watchlist_code(self) -> str:
+        """Pick the first A-share code from STOCK_LIST for capital-flow probing."""
+        from data_provider.base import _market_tag, normalize_stock_code
+
+        for code in self._get_configured_watchlist_codes():
+            try:
+                normalized = normalize_stock_code(code)
+                if _market_tag(normalized) == "cn":
+                    return normalized
+            except Exception:
+                continue
+        return ""
+
+    @staticmethod
+    def _extract_sector_rankings_from_capital_flow(context: Any) -> Dict[str, Any]:
+        """Compatible extraction of sector_rankings from capital_flow_context shapes."""
+        if not isinstance(context, dict):
+            return {}
+        candidates = [
+            context.get("payload"),
+            context.get("data"),
+            context,
+        ]
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            rankings = candidate.get("sector_rankings")
+            if isinstance(rankings, dict) and (rankings.get("top") or rankings.get("bottom")):
+                return rankings
+        return {}
+
+    def _get_sector_fund_flows(self, overview: MarketOverview):
+        """Fetch sector fund-flow rankings via existing capital_flow_context (fail-open)."""
+        if self.region != "cn":
+            return
+        try:
+            logger.info("[大盘] %s action=get_sector_fund_flows status=start", self._log_context())
+            trigger_code = self._pick_first_cn_watchlist_code()
+            if not trigger_code:
+                logger.warning(
+                    "[大盘] %s action=get_sector_fund_flows status=empty reason=no_cn_watchlist",
+                    self._log_context(),
+                )
+                return
+
+            context = self.data_manager.get_capital_flow_context(
+                trigger_code,
+                budget_seconds=4,
+            )
+            rankings = self._extract_sector_rankings_from_capital_flow(context)
+            top = list(rankings.get("top") or [])[:5]
+            bottom = list(rankings.get("bottom") or [])[:5]
+            if top or bottom:
+                overview.sector_fund_flows = {
+                    "top": top,
+                    "bottom": bottom,
+                    "source": "capital_flow_context",
+                    "trigger_code": trigger_code,
+                }
+                logger.info(
+                    "[大盘] %s action=get_sector_fund_flows status=success trigger=%s top=%s bottom=%s",
+                    self._log_context(),
+                    trigger_code,
+                    [str((row or {}).get("name") or "") for row in top],
+                    [str((row or {}).get("name") or "") for row in bottom],
+                )
+            else:
+                logger.warning(
+                    "[大盘] %s action=get_sector_fund_flows status=empty trigger=%s",
+                    self._log_context(),
+                    trigger_code,
+                )
+        except Exception as e:
+            logger.warning(
+                "[大盘] %s action=get_sector_fund_flows status=failed error=%s",
+                self._log_context(),
+                e,
+            )
+
+    def _get_watchlist_board_map(self, overview: MarketOverview):
+        """Map STOCK_LIST symbols to belong boards via existing get_belong_boards (fail-open)."""
+        try:
+            logger.info("[大盘] %s action=get_watchlist_board_map status=start", self._log_context())
+            codes = self._get_configured_watchlist_codes()[:12]
+            if not codes:
+                logger.warning(
+                    "[大盘] %s action=get_watchlist_board_map status=empty reason=no_stock_list",
+                    self._log_context(),
+                )
+                return
+
+            board_map: Dict[str, Any] = {}
+            success_count = 0
+            for code in codes:
+                label = self._resolve_watchlist_label(code)
+                boards: List[str] = []
+                try:
+                    raw_boards = self.data_manager.get_belong_boards(code) or []
+                    for item in raw_boards:
+                        if isinstance(item, dict):
+                            name = str(item.get("name") or "").strip()
+                        else:
+                            name = str(item or "").strip()
+                        if name and name not in boards:
+                            boards.append(name)
+                        if len(boards) >= 5:
+                            break
+                    if boards:
+                        success_count += 1
+                except Exception as exc:
+                    logger.debug(
+                        "[大盘] %s action=get_watchlist_board_map code=%s status=item_failed error=%s",
+                        self._log_context(),
+                        code,
+                        exc,
+                    )
+                board_map[code] = {"label": label, "boards": boards}
+
+            overview.watchlist_board_map = board_map
+            if success_count > 0:
+                logger.info(
+                    "[大盘] %s action=get_watchlist_board_map status=success mapped=%d/%d",
+                    self._log_context(),
+                    success_count,
+                    len(codes),
+                )
+            else:
+                logger.warning(
+                    "[大盘] %s action=get_watchlist_board_map status=empty mapped=0/%d",
+                    self._log_context(),
+                    len(codes),
+                )
+        except Exception as e:
+            logger.warning(
+                "[大盘] %s action=get_watchlist_board_map status=failed error=%s",
+                self._log_context(),
+                e,
+            )
     
     # def _get_north_flow(self, overview: MarketOverview):
     #     """获取北向资金流入"""
@@ -1231,6 +1377,88 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             parts.append(f"{name}({cls._format_signed_pct(item.get('change_pct'))})")
         return ", ".join(parts)
 
+    @classmethod
+    def _format_sector_fund_flow_summary(cls, flows: Any, side: str = "top", limit: int = 5) -> str:
+        """Format sector fund-flow top/bottom rows for prompt injection."""
+        if not isinstance(flows, dict):
+            return ""
+        rows = flows.get(side) or []
+        parts: List[str] = []
+        for item in rows[:limit]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            flow_val = item.get("net_inflow")
+            if flow_val is None:
+                flow_val = item.get("inflow")
+            if flow_val is None:
+                parts.append(name)
+                continue
+            try:
+                numeric = float(flow_val)
+                # Values from capital_flow_context are often in yuan; keep compact.
+                if abs(numeric) >= 1e8:
+                    parts.append(f"{name}({numeric / 1e8:+.2f}亿)")
+                elif abs(numeric) >= 1e4:
+                    parts.append(f"{name}({numeric / 1e4:+.0f}万)")
+                else:
+                    parts.append(f"{name}({numeric:+.2f})")
+            except (TypeError, ValueError):
+                parts.append(name)
+        return "、".join(parts)
+
+    @classmethod
+    def _format_watchlist_board_summary(cls, board_map: Any) -> str:
+        """Format watchlist -> belong boards mapping for prompt injection."""
+        if not isinstance(board_map, dict) or not board_map:
+            return ""
+        lines: List[str] = []
+        for code, meta in board_map.items():
+            if not isinstance(meta, dict):
+                label = str(code)
+                boards: List[str] = []
+            else:
+                label = str(meta.get("label") or code).strip() or str(code)
+                boards = [
+                    str(name).strip()
+                    for name in (meta.get("boards") or [])
+                    if str(name or "").strip()
+                ]
+            board_text = "、".join(boards) if boards else "暂无所属板块数据"
+            lines.append(f"- {label}：{board_text}")
+        return "\n".join(lines)
+
+    def _build_market_radar_v3_block(self, overview: MarketOverview) -> str:
+        """Build V3 fund-flow + watchlist-board context from overview fields only."""
+        flows = overview.sector_fund_flows or {}
+        board_map = overview.watchlist_board_map or {}
+        has_flows = bool(isinstance(flows, dict) and (flows.get("top") or flows.get("bottom")))
+        has_boards = bool(isinstance(board_map, dict) and board_map)
+        if not has_flows and not has_boards and self.region != "cn":
+            return ""
+
+        review_language = self._get_review_language()
+        top_text = self._format_sector_fund_flow_summary(flows, "top") if has_flows else ""
+        bottom_text = self._format_sector_fund_flow_summary(flows, "bottom") if has_flows else ""
+        board_text = self._format_watchlist_board_summary(board_map) if has_boards else ""
+
+        if review_language == "en":
+            return f"""## Market Funds & Holdings Linkage V3
+- Sector fund inflow Top: {top_text or "No reliable sector fund-flow data"}
+- Sector fund outflow Top: {bottom_text or "No reliable sector fund-flow data"}
+- Watchlist belong boards:
+{board_text or "- No watchlist board mapping"}
+- Data boundary: only use provided fund-flow / belong-board fields; if missing, write "no reliable sector fund-flow data" or "no clear linkage"; do not invent northbound/ETF/net-inflow or buy/sell calls."""
+
+        return f"""## 市场资金与持仓关联 V3
+- 板块资金流入 Top：{top_text or "暂无可靠板块资金流数据"}
+- 板块资金流出 Top：{bottom_text or "暂无可靠板块资金流数据"}
+- 自选股所属板块：
+{board_text or "- 暂无自选股所属板块数据"}
+- 数据边界说明：只能使用上方已提供的板块资金流与所属板块；若某侧缺失，写“暂无可靠板块资金流数据”或“暂无明显关联”；严禁编造北向/ETF/主力净流入；机会雷达若与自选股板块相关必须点名相关股票；不要直接给买卖建议。"""
+
     @staticmethod
     def _escape_markdown_link_label(value: str) -> str:
         return value.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
@@ -1543,7 +1771,9 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             return "\n\n".join(sections)
 
         watchlist_rule = (
-            "必须把每个机会方向与【我的持仓/关注股】做关联，并输出字段“持仓关联：”和“可观察个股：”。"
+            "必须把每个机会方向与【我的持仓/关注股】及【市场资金与持仓关联 V3】中的自选股所属板块做关联，"
+            "并输出字段“持仓关联：”和“可观察个股：”。"
+            "若方向与 watchlist_board_map 中的自选股板块相关，必须点名相关股票；"
             "可观察个股只能选自提供的持仓/关注股或主线相关观察标的，只列观察、不给买卖建议。"
             "若无明显相关性，写：持仓关联：暂无明显关联。"
             if has_watchlist
@@ -1556,12 +1786,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 ### 三、板块主线
 （不要只复述“哪个板块涨了”。必须判断：是否形成主线；行业主线还是概念题材；资金扩散还是单点抱团；是否可能一日游；哪些方向要避免追高。未提供的板块资金流/研报/目标价不要编造。）
 
-### 四、市场资金雷达 V2
-（必须基于上方“市场资金与板块机会雷达 V2”数据块解读，严禁编造北向资金、ETF 资金、主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”。
+### 四、市场资金雷达 V3
+（必须结合上方“市场资金与板块机会雷达 V2”和“市场资金与持仓关联 V3”解读；严禁编造北向资金、ETF 资金、主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”。
 必须严格按下列字段输出，字段名不得改写：
 - 风险偏好：进攻 / 均衡 / 防守
 - 赚钱效应：扩散 / 分化 / 收缩
 - 资金结构：指数弱个股强 / 权重拖累 / 题材活跃 / 均衡
+- 板块资金验证：有流入支持 / 流出压制 / 暂无可靠板块资金流数据
 - 主线强度：主线集中 / 快速轮动 / 局部轮动
 - 追高风险：高 / 中 / 低
 - 明日确认信号：）
@@ -1573,13 +1804,13 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 #### 方向一：行业/主题名称
 - 关注理由：
 - 板块持续性判断：连续走强 / 刚启动 / 一日游风险 / 转弱观察
-- 资金/情绪验证：
+- 资金/情绪验证：若该方向出现在板块资金流入 Top，写“板块资金流支持”；若无资金流数据，写“暂无可靠板块资金流数据”，不要编造
 - 追高风险：高 / 中 / 低
-- 持仓关联：
+- 持仓关联：若与自选股所属板块相关，必须点名相关股票；否则写暂无明显关联
 - 可观察个股：只列观察，不给买入建议
 - 失效条件：
 
-后续若接入板块资金流、研报与目标价，可在“资金/情绪验证”中补充；当前没有则写“暂无该类数据”。）
+）
 
 ### 六、消息催化
 （结合近三日新闻，提炼真正影响明日交易的催化或扰动；区分已定价信息与仍可能发酵的事件。）
@@ -1612,10 +1843,10 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             )
         if self.profile.has_market_stats:
             add_section(
-                "市场资金雷达 V2",
+                "市场资金雷达 V3",
                 (
-                    "（标题固定为“市场资金雷达 V2”，不得改名。必须输出字段："
-                    "风险偏好；赚钱效应；资金结构；主线强度；追高风险；明日确认信号。"
+                    "（标题固定为“市场资金雷达 V3”，不得改名。必须输出字段："
+                    "风险偏好；赚钱效应；资金结构；板块资金验证；主线强度；追高风险；明日确认信号。"
                     "严禁编造北向/ETF/主力净流入；未提供昨日成交额时禁止写“较昨日放大/萎缩”）"
                 ),
             )
@@ -1626,7 +1857,8 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                     "（标题固定，不得改名。给出 3-5 个候选观察方向，只谈观察不荐股。"
                     f"{watchlist_rule}"
                     "每个方向必须使用字段：关注理由；板块持续性判断；资金/情绪验证；"
-                    "追高风险；持仓关联；可观察个股；失效条件。）"
+                    "追高风险；持仓关联；可观察个股；失效条件。"
+                    "资金流入 Top 支持该方向时写“板块资金流支持”；无资金流数据写“暂无可靠板块资金流数据”。）"
                 ),
             )
         add_section(
@@ -1771,6 +2003,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         has_watchlist = bool(watchlist_codes)
         watchlist_block = self._build_watchlist_context_block(review_language)
         radar_v2_block = self._build_market_radar_v2_block(overview)
+        radar_v3_block = self._build_market_radar_v3_block(overview)
         output_template_sections = self._build_output_template_sections(
             review_language,
             has_watchlist=has_watchlist,
@@ -1780,7 +2013,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         if self.region in ("jp", "kr"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
-            "报告要像交易员盘后工作台：先给结论，再按数据表、板块主线、市场资金雷达 V2、机会雷达、催化和计划展开"
+            "报告要像交易员盘后工作台：先给结论，再按数据表、板块主线、市场资金雷达 V3、机会雷达、催化和计划展开"
             if self.profile.has_market_stats or self.profile.has_sector_rankings
             else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
         )
@@ -1812,6 +2045,8 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 {sector_block}
 
 {radar_v2_block}
+
+{radar_v3_block}
 
 {data_limits_block}
 
@@ -1852,8 +2087,9 @@ Output the report content directly, no extra commentary.
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
 - 必须严格使用以下标题，不得省略，不得改名
-- 必须把机会方向与【我的持仓/关注股】做关联；每个方向必须输出“持仓关联：”“可观察个股：”“资金/情绪验证：”“失效条件：”
-- “### 四、市场资金雷达 V2”必须输出：风险偏好、赚钱效应、资金结构、主线强度、追高风险、明日确认信号
+- 必须把机会方向与【我的持仓/关注股】及【市场资金与持仓关联 V3】做关联；每个方向必须输出“持仓关联：”“可观察个股：”“资金/情绪验证：”“失效条件：”
+- “### 四、市场资金雷达 V3”必须输出：风险偏好、赚钱效应、资金结构、板块资金验证、主线强度、追高风险、明日确认信号
+- 若方向与自选股所属板块相关，持仓关联必须点名相关股票；若板块资金流入 Top 支持该方向，资金/情绪验证写“板块资金流支持”；无资金流数据写“暂无可靠板块资金流数据”，不要编造
 - 若持仓已提供但无明显相关性，写：持仓关联：暂无明显关联；未提供持仓时写：持仓关联：暂无持仓上下文，仅作为市场方向观察
 - 不要编造不在 STOCK_LIST 中的持仓，不要直接给买卖建议
 - 未提供昨日成交额时，禁止写“较昨日放大/萎缩”
@@ -1876,6 +2112,8 @@ Output the report content directly, no extra commentary.
 {sector_block}
 
 {radar_v2_block}
+
+{radar_v3_block}
 
 {data_limits_block}
 
@@ -2025,12 +2263,20 @@ Market conditions can change quickly. The data above is for reference only and d
             if self.profile.has_sector_rankings
             else ""
         )
+        flows = overview.sector_fund_flows or {}
+        has_flows = bool(isinstance(flows, dict) and (flows.get("top") or flows.get("bottom")))
+        if has_flows:
+            top_flow_text = self._format_sector_fund_flow_summary(flows, "top") or "有流入数据"
+            fund_flow_validation = f"板块资金流支持（流入 Top：{top_flow_text}）"
+        else:
+            fund_flow_validation = "暂无可靠板块资金流数据"
         funds_section = (
-            """
-### 四、市场资金雷达 V2
+            f"""
+### 四、市场资金雷达 V3
 - 风险偏好：均衡
 - 赚钱效应：分化
 - 资金结构：均衡
+- 板块资金验证：{fund_flow_validation}
 - 主线强度：局部轮动
 - 追高风险：中
 - 明日确认信号：等待成交额与涨停结构相互确认；未提供昨日成交额，不做较昨日放大/萎缩判断
@@ -2039,11 +2285,19 @@ Market conditions can change quickly. The data above is for reference only and d
             else ""
         )
         watchlist_codes = self._get_configured_watchlist_codes()
+        board_map = overview.watchlist_board_map or {}
+        linked_labels: List[str] = []
+        for code in (watchlist_codes or [])[:12]:
+            meta = board_map.get(code) if isinstance(board_map, dict) else None
+            if isinstance(meta, dict) and meta.get("boards"):
+                linked_labels.append(str(meta.get("label") or code))
+            else:
+                linked_labels.append(self._resolve_watchlist_label(code))
         if watchlist_codes:
-            watchlist_labels = "、".join(
-                self._resolve_watchlist_label(code) for code in watchlist_codes[:12]
+            watchlist_labels = "、".join(linked_labels)
+            portfolio_link = (
+                f"优先对照自选股所属板块点名相关股票；无明显重叠则写暂无明显关联。关注股：{watchlist_labels}"
             )
-            portfolio_link = f"与关注股有关则点名；否则写暂无明显关联。关注股：{watchlist_labels}"
             observe_stocks = "只列观察，优先来自 STOCK_LIST；不给买入建议"
         else:
             portfolio_link = "暂无持仓上下文，仅作为市场方向观察。"
@@ -2055,7 +2309,7 @@ Market conditions can change quickly. The data above is for reference only and d
 #### 方向一：待主线确认
 - 关注理由：暂无足够确认时，优先观察主线是否延续、成交额是否配合。
 - 板块持续性判断：转弱观察
-- 资金/情绪验证：待确认；暂无板块资金流/研报/目标价数据。
+- 资金/情绪验证：{fund_flow_validation}
 - 追高风险：高
 - 持仓关联：{portfolio_link}
 - 可观察个股：{observe_stocks}
