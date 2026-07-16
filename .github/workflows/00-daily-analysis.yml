@@ -1,9 +1,10 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
+  # 定时触发
   schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
+    - cron: '0 10 * * 1-5'     # 工作日 UTC 10:00 = 北京时间 18:00，仅大盘复盘
+    - cron: '30 10 * * 5'      # 周五 UTC 10:30 = 北京时间 18:30，自选股周报
   
   # 手动触发
   workflow_dispatch:
@@ -16,7 +17,7 @@ on:
         options:
           - full          # 完整分析（股票+大盘）
           - market-only   # 仅大盘复盘
-          - stocks-only   # 仅股票分析
+          - stocks-only   # 仅股票分析（中长线自选股周报视角）
       force_run:
         description: '强制运行（跳过交易日检查）'
         required: false
@@ -429,16 +430,39 @@ jobs:
             echo "✅ LITELLM 配置文件已写入: $LITELLM_CONFIG"
           fi
 
-          # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          # 判断运行模式：
+          # - 手动触发：使用用户选择的 mode
+          # - 定时触发：工作日 10:00 UTC -> market-only；周五 10:30 UTC -> stocks-only
+          # 不要让工作日自动跑 full
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="${{ github.event.inputs.mode }}"
+            MODE="${MODE:-full}"
+          else
+            SCHEDULE_CRON="${{ github.event.schedule }}"
+            if [ "$SCHEDULE_CRON" = "30 10 * * 5" ]; then
+              MODE="stocks-only"
+            else
+              MODE="market-only"
+            fi
+          fi
+
+          # stocks-only 统一为中长线自选股周报视角
+          unset STOCK_ANALYSIS_HORIZON
+          if [ "$MODE" = "stocks-only" ]; then
+            export STOCK_ANALYSIS_HORIZON=weekly
+          fi
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
           echo "=========================================="
           echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
           echo "🎯 运行模式: $MODE"
+          echo "🧭 分析视角: ${STOCK_ANALYSIS_HORIZON:-daily}"
           echo "📊 自选股: $STOCK_LIST"
           echo "📝 报告类型: $REPORT_TYPE"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "🗓️ 触发 cron: ${{ github.event.schedule }}"
+          fi
           echo ""
           echo "=========================================="
           echo "📋 配置检查"

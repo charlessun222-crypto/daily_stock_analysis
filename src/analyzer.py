@@ -13,6 +13,7 @@ A股自选股智能分析系统 - AI分析层
 import json
 import logging
 import math
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -2368,6 +2369,8 @@ class GeminiAnalyzer:
                 .replace("{default_skill_policy_section}", default_skill_policy_section)
                 .replace("{skills_section}", skills_section)
             )
+        if self._is_weekly_stock_report_horizon():
+            base_prompt += self._weekly_stock_report_system_addon(lang)
         if lang == "en":
             return base_prompt + """
 
@@ -2399,6 +2402,51 @@ class GeminiAnalyzer:
 - 所有面向用户的人类可读文本值必须使用中文。
 """
 
+    @staticmethod
+    def _is_weekly_stock_report_horizon() -> bool:
+        """True when STOCK_ANALYSIS_HORIZON requests a weekly stock-report lens."""
+        raw = (os.getenv("STOCK_ANALYSIS_HORIZON") or "").strip().lower()
+        return raw in {"weekly", "week", "weekly_stock_report", "stocks_weekly"}
+
+    @staticmethod
+    def _weekly_stock_report_system_addon(report_language: str) -> str:
+        lang = normalize_report_language(report_language)
+        if lang == "en":
+            return """
+
+## Analysis Horizon: Weekly Stock Report (medium/long-term)
+
+- This run is a weekly watchlist report, not a daily trading call sheet.
+- Do not emphasize same-day buy/sell timing.
+- Focus on: this week's market theme, watchlist/holding changes, key announcements/news,
+  whether the investment thesis changed, next week's watch points, and any confirmed public
+  research/target-price changes.
+- Source discipline: separate confirmed filings/research, news/rumors, and AI inference.
+- If reliable research/target-price data is unavailable, write that clearly — never invent it.
+"""
+        if lang == "ko":
+            return """
+
+## 분석 시야: 중장기 주간 리포트
+
+- 이번 실행은 일간 매매 콜이 아니라 관심종목 주간 리포트입니다.
+- 당일 매수/매도 타이밍을 강조하지 마세요.
+- 이번 주 시장 메인 테마, 관심/보유 변화, 핵심 공시·뉴스, 투자 논리 변화 여부,
+  다음 주 관찰 포인트, 확인된 공개 리서치/목표가 변화를 중심으로 정리하세요.
+- 출처를 구분하세요: 확인된 공시/리서치, 뉴스·루머, AI 추론.
+- 신뢰할 수 있는 리서치 데이터가 없으면 그렇게 명시하고 조작하지 마세요.
+"""
+        return """
+
+## 分析视角：中长线自选股周报
+
+- 本次是周报视角，不是短线日报，不强调每日买卖时点。
+- 重点覆盖：本周市场主线、本周持仓/自选股变化、本周最重要公告/新闻、
+  投资逻辑是否变化、下周重点观察、本周公开研报/机构观点/目标价变化。
+- 证据分层：已确认研报/公告、新闻或市场传闻、AI 推断，三者必须区分表述。
+- 可通过已有搜索结果引用公开信息，但不承诺覆盖全部研报；若无可靠研报/目标价数据，写“暂无可靠研报数据”，禁止编造。
+"""
+    
     def _has_channel_config(self, config: Config) -> bool:
         """Check if multi-channel config (channels / YAML / legacy model_list) is active."""
         return bool(config.llm_model_list) and not all(
@@ -4086,7 +4134,60 @@ class GeminiAnalyzer:
 """
 
         # 明确的输出要求
-        prompt += f"""
+        if self._is_weekly_stock_report_horizon():
+            if report_language == "en":
+                prompt += f"""
+---
+
+## ✅ Analysis Task (Weekly Stock Report)
+
+Generate a decision dashboard for **{stock_name}({code})** in JSON format.
+This is a medium/long-term weekly watchlist report:
+1. This week's market theme relevance
+2. Watchlist/holding change implications
+3. Most important announcements/news this week
+4. Whether the investment thesis changed
+5. Next week's watch points
+6. Confirmed public research / institutional views / target-price changes
+   - If unavailable: write "No reliable research data" — never invent it
+Source labels required: confirmed filing/research vs news/rumor vs AI inference.
+Do not emphasize same-day buy/sell timing.
+"""
+            elif report_language == "ko":
+                prompt += f"""
+---
+
+## ✅ 분석 과제 (중장기 주간 리포트)
+
+**{stock_name}({code})** 의사결정 대시보드를 JSON으로 생성하세요.
+주간 리포트 관점:
+1. 이번 주 시장 메인 테마와의 관련성
+2. 관심/보유 변화 의미
+3. 이번 주 핵심 공시·뉴스
+4. 투자 논리 변화 여부
+5. 다음 주 관찰 포인트
+6. 확인된 공개 리서치/기관 의견/목표가 변화 (없으면 “신뢰할 수 있는 리서치 데이터 없음”, 조작 금지)
+출처 구분: 확인된 공시/리서치 / 뉴스·루머 / AI 추론.
+당일 매매 타이밍을 강조하지 마세요.
+"""
+            else:
+                prompt += f"""
+---
+
+## ✅ 分析任务（中长线自选股周报）
+
+请为 **{stock_name}({code})** 生成【决策仪表盘】，严格按照 JSON 格式输出。
+本次是**周报视角**，不强调每日买卖，请重点覆盖：
+1. 本周市场主线与该股相关性
+2. 本周持仓/自选股维度的变化含义
+3. 本周最重要公告/新闻
+4. 投资逻辑是否变化
+5. 下周重点观察
+6. 本周公开研报/机构观点/目标价变化（无可靠数据时写“暂无可靠研报数据”，禁止编造）
+证据必须区分：已确认研报/公告、新闻或市场传闻、AI 推断。
+"""
+        else:
+            prompt += f"""
 ---
 
 ## ✅ 分析任务
@@ -4107,7 +4208,35 @@ class GeminiAnalyzer:
 正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 """
-        if use_legacy_default_prompt:
+        if self._is_weekly_stock_report_horizon():
+            if report_language == "en":
+                prompt += """
+
+### Weekly focus (required):
+1. Did this week's market theme support or hurt the thesis?
+2. Any thesis-changing announcement/news this week?
+3. Any confirmed public research/target-price change? If none: say unavailable.
+4. What to watch next week (observation only, no buy/sell call)?
+"""
+            elif report_language == "ko":
+                prompt += """
+
+### 주간 초점 (필수):
+1. 이번 주 시장 메인 테마가 투자 논리를 지지/훼손했는가?
+2. 이번 주 논리 변경급 공시·뉴스가 있었는가?
+3. 확인된 공개 리서치/목표가 변화가 있는가? 없으면 없다고 명시.
+4. 다음 주 관찰 포인트는? (관찰만, 매매 지시 금지)
+"""
+            else:
+                prompt += """
+
+### 周报重点关注（必须明确回答）：
+1. ❓ 本周市场主线对该股投资逻辑是强化还是削弱？
+2. ❓ 本周是否出现改变逻辑的重要公告/新闻？
+3. ❓ 是否有已确认的公开研报/目标价变化？没有则写“暂无可靠研报数据”
+4. ❓ 下周重点观察什么？（只观察，不给买卖指令）
+"""
+        elif use_legacy_default_prompt:
             prompt += f"""
 
 ### 重点关注（必须明确回答）：

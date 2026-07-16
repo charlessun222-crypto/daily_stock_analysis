@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+- [改进] GitHub Actions 拆分为工作日 18:00 仅大盘复盘与周五 18:30 自选股周报；stocks-only 注入中长线周报分析视角。
 - [改进] 大盘复盘机会雷达改为固定观察池格式，补齐持仓关联、板块持续性、资金雷达约束与明日计划字段，并预留板块资金流/研报/目标价接入说明。
 - [改进] 大盘复盘中文输出升级为「市场资金雷达」结构：强化板块主线持续性研判，新增市场资金雷达与机会雷达，并同步无模型 fallback 报告章节。
 - [修复] 桌面与 Docker 发布显式安装 `orjson`，桌面 PyInstaller 产物同时冻结并执行运行时导入探针，避免 LiteLLM 调用时报 `No module named 'orjson'`。
