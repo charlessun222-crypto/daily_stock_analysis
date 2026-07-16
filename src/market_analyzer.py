@@ -48,8 +48,8 @@ _CHINESE_SECTION_PATTERNS = {
     "market_summary": r"###\s*一、(?:盘面总览|市场总结)",
     "index_commentary": r"###\s*二、(?:指数结构|指数点评|主要指数)",
     "sector_highlights": r"###\s*三、(?:板块主线|热点解读|板块表现)",
-    "funds_sentiment": r"###\s*四、(?:资金与情绪|资金动向)",
-    "news_catalysts": r"###\s*五、(?:消息催化|后市展望)",
+    "funds_sentiment": r"###\s*四、(?:市场资金雷达|资金与情绪|资金动向)",
+    "news_catalysts": r"###\s*(?:五|六)、(?:消息催化|后市展望)",
 }
 
 
@@ -1355,21 +1355,24 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
 
         if self.profile.has_market_stats and self.profile.has_sector_rankings:
             return """### 三、板块主线
-（区分行业板块与概念题材，分析领涨/领跌背后的逻辑、持续性和是否形成主线）
+（不要只复述涨幅榜。请区分行业板块与概念题材，判断是否形成主线、驱动逻辑是什么、持续性如何；说明哪些是一日游，哪些更有延续性。）
 
-### 四、资金与情绪
-（解读成交额、涨跌停结构、市场宽度和风险偏好）
+### 四、市场资金雷达
+（用成交额、上涨/下跌家数、涨停/跌停结构判断市场风险偏好：进攻、均衡还是防守；并说明资金更偏向哪些方向，例如高切低、抱团龙头、题材扩散或防御回流。）
 
-### 五、消息催化
-（结合近三日新闻，提炼真正影响明日交易的催化或扰动）
+### 五、机会雷达
+（基于板块主线、资金温度和消息催化，给出 3-5 个值得观察的行业/主题方向。每个方向说明：1）为什么值得观察；2）需要继续验证什么；3）是否容易追高；4）是否和我的持仓相关。若上下文未提供持仓信息，则写“持仓关联：暂无持仓上下文”。）
 
-### 六、明日交易计划
-（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件）
+### 六、消息催化
+（结合近三日新闻，提炼真正影响明日交易的催化或扰动；区分已定价信息与仍可能发酵的事件。）
 
-### 七、风险提示
+### 七、明日交易计划
+（给出进攻/均衡/防守结论、仓位区间、关注方向、回避方向和一个触发失效条件。）
+
+### 八、风险提示
 （列出需要关注的风险点；最后补充“建议仅供参考，不构成投资建议”。）"""
 
-        numerals = ["一", "二", "三", "四", "五", "六", "七", "八"]
+        numerals = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
         section_number = 3
         sections: List[str] = []
 
@@ -1379,9 +1382,20 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
             section_number += 1
 
         if self.profile.has_sector_rankings:
-            add_section("板块主线", "（仅分析已提供的行业板块与概念题材榜单，不扩展未提供的数据）")
+            add_section(
+                "板块主线",
+                "（不要只复述涨幅榜。仅基于已提供的行业板块与概念题材榜单，判断是否形成主线、持续性如何，不扩展未提供的数据）",
+            )
         if self.profile.has_market_stats:
-            add_section("资金与情绪", "（仅解读已提供的成交额、涨跌停结构、市场宽度和风险偏好数据）")
+            add_section(
+                "市场资金雷达",
+                "（仅解读已提供的成交额、上涨/下跌家数、涨停/跌停结构，判断进攻/均衡/防守偏好及资金偏向，不编造未提供的数据）",
+            )
+        if self.profile.has_sector_rankings or self.profile.has_market_stats:
+            add_section(
+                "机会雷达",
+                "（基于已提供的板块/资金线索，给出 3-5 个值得观察的行业/主题方向；每个方向说明：为什么值得观察、需要继续验证什么、是否容易追高、是否和我的持仓相关；无持仓上下文时写“持仓关联：暂无持仓上下文”）",
+            )
         add_section(
             "消息催化",
             "（结合近三日新闻和指数表现，提炼真正影响明日交易的催化或扰动；不要推断未提供的资金流、市场宽度或板块榜）",
@@ -1515,7 +1529,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
         if self.region in ("jp", "kr"):
             zh_report_title = f"{overview.date} {zh_market_scope_name}大盘复盘"
         workflow_hint = (
-            "报告要像交易员盘后工作台：先给结论，再按数据表、主线、催化、计划展开"
+            "报告要像交易员盘后工作台：先给结论，再按数据表、板块主线、市场资金雷达、机会雷达、催化和计划展开"
             if self.profile.has_market_stats or self.profile.has_sector_rankings
             else "报告要像交易员盘后工作台：先给结论，再按指数、新闻催化和计划展开"
         )
@@ -1724,7 +1738,7 @@ Market conditions can change quickly. The data above is for reference only and d
         indices_block = self._build_indices_block(overview)
         sector_block = self._build_sector_block(overview) if self.profile.has_sector_rankings else ""
         summary_focus = (
-            "指数承接、成交额变化和板块持续性"
+            "资金方向、板块主线持续性和机会雷达验证点"
             if self.profile.has_market_stats and self.profile.has_sector_rankings
             else "指数承接、消息催化和整体风险状态"
         )
@@ -1747,12 +1761,38 @@ Market conditions can change quickly. The data above is for reference only and d
         )
         funds_section = (
             """
-### 四、资金与情绪
-- 结合成交额和涨跌家数看，当前更适合等待确认，避免仅凭单一热点追高。
+### 四、市场资金雷达
+- 结合成交额、上涨/下跌家数和涨停/跌停结构看，当前更适合等待确认，避免仅凭单一热点追高。
 """
             if self.profile.has_market_stats
             else ""
         )
+        opportunity_section = (
+            """
+### 五、机会雷达
+- 暂无足够确认时，优先观察主线是否延续、成交额是否配合，以及是否存在明显追高风险。
+- 持仓关联：暂无持仓上下文。
+"""
+            if self.profile.has_sector_rankings or self.profile.has_market_stats
+            else ""
+        )
+        if self.profile.has_sector_rankings or self.profile.has_market_stats:
+            news_heading = "### 六、消息催化"
+            risk_heading = "### 八、风险提示"
+            plan_section = """
+### 七、明日交易计划
+- 结论：均衡观望；仓位建议保持中性，等待主线与资金方向相互确认。
+- 关注方向：已形成持续性的行业/主题；回避一日游热点和拥挤追高。
+- 触发失效条件：成交额显著萎缩或涨停结构快速恶化。
+"""
+        else:
+            # Keep legacy numbering for markets without breadth/sector tables
+            # so strategy framework stays at 六 and risk at 七.
+            news_heading = "### 五、消息催化"
+            risk_heading = "### 七、风险提示"
+            plan_section = f"""
+{self._get_strategy_markdown_block(template_language)}
+"""
         return f"""## {overview.date} 大盘复盘
 
 > 今日{market_label}市场整体呈现**{market_mood}**态势，优先观察{summary_focus}。
@@ -1764,14 +1804,14 @@ Market conditions can change quickly. The data above is for reference only and d
 {indices_block or indices_text or "暂无指数数据。"}
 {sector_section}
 {funds_section}
+{opportunity_section}
 
-### 五、消息催化
+{news_heading}
 - 暂无可用新闻时，应降低对题材持续性的确定性判断。
+{plan_section}
 
-{self._get_strategy_markdown_block(template_language)}
-
-### 七、风险提示
-- 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
+{risk_heading}
+- 市场有风险，投资需谨慎。建议仅供参考，不构成投资建议。
 
 ---
 *复盘时间: {datetime.now().strftime('%H:%M')}*
